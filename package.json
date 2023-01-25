@@ -1,0 +1,33 @@
+{
+    "name": "socket.io-kafka-adapter",
+    "version": "1.0.0",
+    "description": "",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1",
+        "prepublishOnly": "npm run build",
+        "compile": "tsc",
+        "clean": "rm -rf dist",
+        "purge": "rm -rf package-lock.json node_modules && npm run clean",
+        "build": "npm run clean && npm run compile",
+        "lint": "tslint ./*.ts --project .",
+        "prettier": "prettier --config ./.prettierrc --write './*.ts'"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+ssh://git@github.com/nooklawliet/socket.io-kafka-adapter.git"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "bugs": {
+        "url": "https://github.com/nooklawliet/socket.io-kafka-adapter/issues"
+    },
+    "homepage": "https://github.com/nooklawliet/socket.io-kafka-adapter#readme",
+    "dependencies": {
+        "kafkajs": "^2.2.3",
+        "socket.io": "^4.5.4",
+        "socket.io-adapter": "^2.5.2"
+    }
+}
