@@ -31,6 +31,12 @@ io.on('connection', async (socket) => {
         console.log(`client: ${socket.id} disconnected`);
         console.log('reason:', reason);
     });
+
+    socket.on('message', (msg) => {
+        console.log(socket.id, 'send message to:', msg);
+        io.to(msg).emit('callback', `message from ${socket.id}`);
+    });
+    
 });
 
 io.on('error', (err) => {

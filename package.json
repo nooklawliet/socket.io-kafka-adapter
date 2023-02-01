@@ -27,7 +27,10 @@
     "homepage": "https://github.com/nooklawliet/socket.io-kafka-adapter#readme",
     "dependencies": {
         "kafkajs": "^2.2.3",
+        "notepack.io": "^3.0.1",
         "socket.io": "^4.5.4",
-        "socket.io-adapter": "^2.5.2"
+        "socket.io-adapter": "^2.5.2",
+        "socket.io-client": "^4.5.4",
+        "uid2": "^1.0.0"
     }
 }
