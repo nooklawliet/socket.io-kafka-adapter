@@ -45,53 +45,68 @@ export class KafkaAdapter extends Adapter {
     async onmessage() {
         await this.consumer.run({
             eachMessage: async ({ topic, partition, message }) => {
-                debug('consumer recieved message', {
-                    topic: topic,
-                    partition: partition,
-                    key: message.key?.toString(),
-                    value: message.value?.toString(),
-                    headers: message.headers,
-                });
-                const msg = message.value;
-                debug('msg:', msg);
-                const args = msgpack.decode(msg);
-                const [uid, packet, opts] = args;
-                opts.rooms = new Set(opts.rooms);
-                opts.except = new Set(opts.except);
-                debug('uid:', uid);
-                debug('packet:', packet);
-                debug('opts:', opts);
-                super.broadcast(packet, opts);
+                try {
+                    debug('consumer recieved message', {
+                        topic: topic,
+                        partition: partition,
+                        key: message.key,
+                        value: message.value,
+                        headers: message.headers,
+                    });
+                    const msg = message.value;
+                    debug('msg:', msg);
+                    debug('msg:', msg?.toString());
+                    const args = msgpack.decode(msg);
+                    debug('args:', args);
+                    const [uid, packet, opts] = args;
+                    debug('uid:', uid);
+                    debug('this.uid:', this.uid);
+                    debug('packet:', packet);
+                    debug('opts:', opts);
+
+                    if (this.uid === uid) {
+                        return debug('ignore same uid');
+                    }
+                    
+                    opts.rooms = new Set(opts.rooms);
+                    opts.except = new Set(opts.except);
+                    super.broadcast(packet, opts);
+                } catch (error) {
+                    return debug('error:', error);
+                }
             },
         });
     }
     broadcast(packet: any, opts: BroadcastOptions) {
-        packet.nsp = this.nsp.name;
-        const rawOpts = {
-            rooms: [...opts.rooms],
-            except: [...new Set(opts.except)],
-            flags: opts.flags,
-        };
-        debug('rawOpts:', rawOpts);
-        const msg = msgpack.encode([this.uid, packet, rawOpts]);
-        let key = this.uid;
-        if (opts.rooms && opts.rooms.size === 1) {
-            key = opts.rooms.keys().next().value;
+        try {
+            packet.nsp = this.nsp.name;
+            const rawOpts = {
+                rooms: [...opts.rooms],
+                except: [...new Set(opts.except)],
+                flags: opts.flags,
+            };
+            debug('rawOpts:', rawOpts);
+            const msg = msgpack.encode([this.uid, packet, rawOpts]);
+            let key = this.uid;
+            if (opts.rooms && opts.rooms.size === 1) {
+                key = opts.rooms.keys().next().value;
+            }
+            const topic = this.topics[0];
+            const produceMessage = {
+                topic: topic,
+                messages: [{
+                    key: key,
+                    value: msg
+                }],
+                acks: 0,
+                timeout: 30000,
+                compression: CompressionTypes.GZIP,
+            }
+            debug('produce message:', produceMessage);
+            this.producer.send(produceMessage);
+            super.broadcast(packet, opts); 
+        } catch (error) {
+            return debug('error:', error);
         }
-        const topic = this.topics[0];
-        const produceMessage = {
-            topic: topic,
-            messages: [{
-                key: key,
-                value: msg
-            }],
-            acks: 0,
-            timeout: 30000,
-            compression: CompressionTypes.GZIP,
-        }
-        debug('produce message:', produceMessage);
-        this.producer.send(produceMessage);
-        super.broadcast(packet, opts);
     }
-
 }

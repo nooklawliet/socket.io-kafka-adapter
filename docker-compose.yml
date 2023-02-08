@@ -16,7 +16,7 @@ services:
     links:
       - zookeeper
     environment:
-      KAFKA_ADVERTISED_HOST_NAME: 192.168.1.133
+      KAFKA_ADVERTISED_HOST_NAME: 192.168.1.140
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       # KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       # KAFKA_DELETE_TOPIC_ENABLE: 'true'
