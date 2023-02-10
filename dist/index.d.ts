@@ -8,9 +8,13 @@ export declare function createAdapter(consumer: Consumer, producer: Producer, op
 export declare class KafkaAdapter extends Adapter {
     private consumer;
     private producer;
-    topic: string;
+    topic: string | Array<string>;
     uid: any;
     constructor(nsp: Namespace, consumer: Consumer, producer: Producer, opts: KafkaAdapterOpts);
     onmessage(): Promise<void>;
     broadcast(packet: any, opts: BroadcastOptions): any;
+    addSockets(opts: any, rooms: any): void;
+    delSockets(opts: any, rooms: any): void;
+    disconnectSockets(opts: any, close: any): void;
+    serverSideEmit(packet: any): void;
 }
