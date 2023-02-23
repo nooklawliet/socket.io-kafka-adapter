@@ -13,8 +13,4 @@ export declare class KafkaAdapter extends Adapter {
     constructor(nsp: Namespace, consumer: Consumer, producer: Producer, opts: KafkaAdapterOpts);
     onmessage(): Promise<void>;
     broadcast(packet: any, opts: BroadcastOptions): any;
-    addSockets(opts: any, rooms: any): void;
-    delSockets(opts: any, rooms: any): void;
-    disconnectSockets(opts: any, close: any): void;
-    serverSideEmit(packet: any): void;
 }

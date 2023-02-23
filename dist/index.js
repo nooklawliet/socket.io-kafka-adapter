@@ -6,10 +6,8 @@ const msgpack = require("notepack.io");
 const uid2 = require("uid2");
 const Debug = require("debug");
 const debug = new Debug('socket.io-kafka-adapter');
-const adapterStore = {};
 const KAFKA_ADAPTER_TOPIC = 'kafka_adapter';
 const KAFKA_ADAPTER_SOCKET_TOPIC = 'kafka_adapter_socket';
-const uid = uid2(6);
 var RequestType;
 (function (RequestType) {
     RequestType[RequestType["SOCKETS"] = 0] = "SOCKETS";
@@ -48,125 +46,16 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                         value: message.value,
                         headers: message.headers,
                     });
-                    if (topic === KAFKA_ADAPTER_TOPIC) {
-                        const msg = message.value;
-                        const args = msgpack.decode(msg);
-                        debug('args:', args);
-                        const [uid, packet, opts] = args;
-                        if (this.uid === uid) {
-                            return debug('ignore same uid');
-                        }
-                        opts.rooms = new Set(opts.rooms);
-                        opts.except = new Set(opts.except);
-                        super.broadcast(packet, opts);
+                    const msg = message.value;
+                    const args = msgpack.decode(msg);
+                    debug('args:', args);
+                    const [uid, packet, opts] = args;
+                    if (this.uid === uid) {
+                        return debug('ignore same uid');
                     }
-                    else if (topic === KAFKA_ADAPTER_SOCKET_TOPIC) {
-                        const msg = message.value;
-                        const args = msgpack.decode(msg);
-                        debug('args:', args);
-                        // const [uid, request] = args;
-                        const request = JSON.parse(args[1]);
-                        debug('json request:', request);
-                        let socket;
-                        switch (request.type) {
-                            case RequestType.REMOTE_JOIN:
-                                debug('RequestType: REMOTE_JOIN');
-                                if (request.opts) {
-                                    const opts = {
-                                        rooms: new Set(request.opts.rooms),
-                                        except: new Set(request.opts.except),
-                                    };
-                                    debug('opts:', opts);
-                                    return super.addSockets(opts, request.rooms);
-                                }
-                                debug('request.sid:', request.sid);
-                                socket = this.nsp.sockets.get(request.sid);
-                                debug('socket:', socket);
-                                if (!socket) {
-                                    return;
-                                }
-                                socket.join(request.room);
-                                // response = JSON.stringify({
-                                //     requestId: request.requestId,
-                                // });
-                                // this.publishResponse(request, response);
-                                break;
-                            case RequestType.REMOTE_LEAVE:
-                                debug('RequestType: REMOTE_LEAVE');
-                                if (request.opts) {
-                                    const opts = {
-                                        rooms: new Set(request.opts.rooms),
-                                        except: new Set(request.opts.except),
-                                    };
-                                    debug('opts:', opts);
-                                    return super.delSockets(opts, request.rooms);
-                                }
-                                debug('request.sid:', request.sid);
-                                socket = this.nsp.sockets.get(request.sid);
-                                debug('socket:', socket);
-                                if (!socket) {
-                                    return;
-                                }
-                                socket.leave(request.room);
-                                // response = JSON.stringify({
-                                //     requestId: request.requestId,
-                                // });
-                                // this.publishResponse(request, response);
-                                break;
-                            case RequestType.REMOTE_DISCONNECT:
-                                debug('RequestType: REMOTE_DISCONNECT');
-                                if (request.opts) {
-                                    const opts = {
-                                        rooms: new Set(request.opts.rooms),
-                                        except: new Set(request.opts.except),
-                                    };
-                                    debug('opts:', opts);
-                                    return super.disconnectSockets(opts, request.close);
-                                }
-                                debug('request.sid:', request.sid);
-                                socket = this.nsp.sockets.get(request.sid);
-                                debug('socket:', socket);
-                                if (!socket) {
-                                    return;
-                                }
-                                socket.disconnect(request.close);
-                                // response = JSON.stringify({
-                                //     requestId: request.requestId,
-                                // });
-                                // this.publishResponse(request, response);
-                                break;
-                            case RequestType.SERVER_SIDE_EMIT:
-                                debug('RequestType: SERVER_SIDE_EMIT');
-                                if (request.uid === this.uid) {
-                                    debug('ignore same uid');
-                                    return;
-                                }
-                                const withAck = request.requestId !== undefined;
-                                if (!withAck) {
-                                    this.nsp._onServerSideEmit(request.data);
-                                    return;
-                                }
-                                let called = false;
-                                const callback = (arg) => {
-                                    // only one argument is expected
-                                    if (called) {
-                                        return;
-                                    }
-                                    called = true;
-                                    debug("calling acknowledgement with %j", arg);
-                                    // this.pubClient.publish(this.responseChannel, JSON.stringify({
-                                    //     type: RequestType.SERVER_SIDE_EMIT,
-                                    //     requestId: request.requestId,
-                                    //     data: arg,
-                                    // }));
-                                };
-                                request.data.push(callback);
-                                this.nsp._onServerSideEmit(request.data);
-                                break;
-                            default:
-                                break;
-                        }
-                    }
+                    opts.rooms = new Set(opts.rooms);
+                    opts.except = new Set(opts.except);
+                    super.broadcast(packet, opts);
                 }
                 catch (error) {
                     return debug('error:', error);
@@ -202,73 +91,6 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
         catch (error) {
             return debug('error:', error);
         }
-    }
-    addSockets(opts, rooms) {
-        var _a;
-        if ((_a = opts.flags) === null || _a === void 0 ? void 0 : _a.local) {
-            return super.addSockets(opts, rooms);
-        }
-        const request = JSON.stringify({
-            uid: this.uid,
-            type: RequestType.REMOTE_JOIN,
-            opts: {
-                rooms: [...opts.rooms],
-                except: [...opts.except],
-            },
-            rooms: [...rooms],
-        });
-        debug('add sockets request:', request);
-        // this.pubClient.publish(this.requestChannel, request);
-    }
-    delSockets(opts, rooms) {
-        var _a;
-        if ((_a = opts.flags) === null || _a === void 0 ? void 0 : _a.local) {
-            return super.delSockets(opts, rooms);
-        }
-        const request = JSON.stringify({
-            uid: this.uid,
-            type: RequestType.REMOTE_LEAVE,
-            opts: {
-                rooms: [...opts.rooms],
-                except: [...opts.except],
-            },
-            rooms: [...rooms],
-        });
-        debug('del sockets request:', request);
-        // this.pubClient.publish(this.requestChannel, request);
-    }
-    disconnectSockets(opts, close) {
-        var _a;
-        if ((_a = opts.flags) === null || _a === void 0 ? void 0 : _a.local) {
-            return super.disconnectSockets(opts, close);
-        }
-        const request = JSON.stringify({
-            uid: this.uid,
-            type: RequestType.REMOTE_DISCONNECT,
-            opts: {
-                rooms: [...opts.rooms],
-                except: [...opts.except],
-            },
-            close,
-        });
-        debug('dicconnect sockets request:', request);
-        // this.pubClient.publish(this.requestChannel, request);
-    }
-    serverSideEmit(packet) {
-        // const withAck = typeof packet[packet.length - 1] === "function";
-        // if (withAck) {
-        //     this.serverSideEmitWithAck(packet).catch(() => {
-        //         // ignore errors
-        //     });
-        //     return;
-        // }
-        const request = JSON.stringify({
-            uid: this.uid,
-            type: RequestType.SERVER_SIDE_EMIT,
-            data: packet,
-        });
-        debug('server side emit request:', request);
-        // this.pubClient.publish(this.requestChannel, request);
     }
 }
 exports.KafkaAdapter = KafkaAdapter;
