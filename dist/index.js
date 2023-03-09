@@ -19,6 +19,7 @@ const Debug = require("debug");
 const kafkajs_1 = require("kafkajs");
 const debug = new Debug('socket.io-kafka-adapter');
 const DEFAULT_KAFKA_ADAPTER_TOPIC = 'kafka_adapter';
+const DEFAULT_REQUEST_TIMEOUT = 5000;
 var RequestType;
 (function (RequestType) {
     RequestType[RequestType["SOCKETS"] = 0] = "SOCKETS";
@@ -48,6 +49,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
         this.adapterTopic = opts.topic || DEFAULT_KAFKA_ADAPTER_TOPIC;
         this.requestTopic = this.adapterTopic + '_request';
         this.responseTopic = this.adapterTopic + '_response';
+        this.requestsTimeout = opts.requestsTimeout || DEFAULT_REQUEST_TIMEOUT;
         this.initConsumer(kafka, opts);
         this.initProducer(kafka);
         this.initAdmin(kafka);
@@ -241,6 +243,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                     debug('request.requestId:', request.requestId);
                     // debug('this.requests:', this.requests);
                     if (this.requests.has(request.requestId)) {
+                        debug('ignore self');
                         return;
                     }
                     const opts1 = {
@@ -625,7 +628,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 ack(new Error(`timeout reached: only ${storedRequest.responses.length} responses received out of ${storedRequest.numSub}`), storedRequest.responses);
                 this.requests.delete(requestId);
             }
-        }, 10000);
+        }, this.requestsTimeout);
         this.requests.set(requestId, {
             type: RequestType.SERVER_SIDE_EMIT,
             numSub,
@@ -674,7 +677,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                     reject(new Error("timeout reached while waiting for fetchSockets response"));
                     this.requests.delete(requestId);
                 }
-            }, 10000);
+            }, this.requestsTimeout);
             this.requests.set(requestId, {
                 type: RequestType.REMOTE_FETCH,
                 numSub,

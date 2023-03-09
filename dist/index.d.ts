@@ -4,6 +4,7 @@ import { Namespace } from 'socket.io';
 export interface KafkaAdapterOpts {
     topic: string;
     groupId: string;
+    requestsTimeout: number;
 }
 export declare function createAdapter(kafka: Kafka, opts: KafkaAdapterOpts): (nsp: Namespace) => KafkaAdapter;
 export declare class KafkaAdapter extends Adapter {
@@ -14,12 +15,13 @@ export declare class KafkaAdapter extends Adapter {
     private requestTopic;
     private responseTopic;
     private uid;
+    private requestsTimeout;
     private requests;
     private ackRequests;
     constructor(nsp: Namespace, kafka: Kafka, opts: KafkaAdapterOpts);
-    initConsumer(kafka: Kafka, opts: KafkaAdapterOpts): Promise<void>;
-    initProducer(kafka: Kafka): Promise<void>;
-    initAdmin(kafka: Kafka): Promise<void>;
+    private initConsumer;
+    private initProducer;
+    private initAdmin;
     private onmessage;
     private onrequest;
     private onresponse;

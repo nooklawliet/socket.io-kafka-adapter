@@ -7,6 +7,7 @@ import { Namespace } from 'socket.io';
 
 const debug = new Debug('socket.io-kafka-adapter');
 const DEFAULT_KAFKA_ADAPTER_TOPIC = 'kafka_adapter';
+const DEFAULT_REQUEST_TIMEOUT = 5000;
 
 enum RequestType {
     SOCKETS = 0,
@@ -35,8 +36,9 @@ interface AckRequest {
     ack: (...args: any[]) => void;
 }
 export interface KafkaAdapterOpts {
-    topic: string,
-    groupId: string
+    topic: string;
+    groupId: string;
+    requestsTimeout: number;
 }
 
 export function createAdapter(kafka: Kafka, opts: KafkaAdapterOpts) {
@@ -55,6 +57,7 @@ export class KafkaAdapter extends Adapter {
     private requestTopic: string;
     private responseTopic: string;
     private uid: any;
+    private requestsTimeout: number;
     private requests: Map<string, Request> = new Map();
     private ackRequests: Map<string, AckRequest> = new Map();
 
@@ -64,6 +67,7 @@ export class KafkaAdapter extends Adapter {
         this.adapterTopic = opts.topic || DEFAULT_KAFKA_ADAPTER_TOPIC;
         this.requestTopic = this.adapterTopic + '_request';
         this.responseTopic = this.adapterTopic + '_response';
+        this.requestsTimeout = opts.requestsTimeout || DEFAULT_REQUEST_TIMEOUT;
         
         this.initConsumer(kafka, opts);
         this.initProducer(kafka);
@@ -74,7 +78,7 @@ export class KafkaAdapter extends Adapter {
         process.on("SIGTERM", this.close.bind(this));
     }
 
-    async initConsumer(kafka: Kafka, opts: KafkaAdapterOpts) {
+    private async initConsumer(kafka: Kafka, opts: KafkaAdapterOpts) {
         this.consumer = kafka.consumer({ groupId: opts.groupId });
         await this.consumer.connect();
         await this.consumer.subscribe({
@@ -94,12 +98,12 @@ export class KafkaAdapter extends Adapter {
         });
     }
 
-    async initProducer(kafka: Kafka) {
+    private async initProducer(kafka: Kafka) {
         this.producer = kafka.producer({ createPartitioner: Partitioners.LegacyPartitioner });
         await this.producer.connect();
     }
 
-    async initAdmin(kafka: Kafka) {
+    private async initAdmin(kafka: Kafka) {
         this.admin = kafka.admin();
         await this.admin.connect();
     }
@@ -681,7 +685,7 @@ export class KafkaAdapter extends Adapter {
                 ack(new Error(`timeout reached: only ${storedRequest.responses.length} responses received out of ${storedRequest.numSub}`), storedRequest.responses);
                 this.requests.delete(requestId);
             }
-        }, 10000);
+        }, this.requestsTimeout);
 
         this.requests.set(requestId, {
             type: RequestType.SERVER_SIDE_EMIT,
@@ -733,7 +737,7 @@ export class KafkaAdapter extends Adapter {
                     reject(new Error("timeout reached while waiting for fetchSockets response"));
                     this.requests.delete(requestId);
                 }
-            }, 10000);
+            }, this.requestsTimeout);
 
             this.requests.set(requestId, {
                 type: RequestType.REMOTE_FETCH,
