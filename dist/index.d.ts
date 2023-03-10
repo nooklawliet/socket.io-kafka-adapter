@@ -11,6 +11,7 @@ export declare class KafkaAdapter extends Adapter {
     private consumer;
     private producer;
     private admin;
+    private groupId;
     private adapterTopic;
     private requestTopic;
     private responseTopic;
@@ -33,7 +34,7 @@ export declare class KafkaAdapter extends Adapter {
     serverSideEmit(packet: any[]): void;
     private serverSideEmitWithAck;
     fetchSockets(opts: BroadcastOptions): Promise<any[]>;
+    private fetchAdapter;
     private getNumSub;
-    serverCount(): Promise<number>;
     close(): Promise<void>;
 }

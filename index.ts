@@ -17,6 +17,7 @@ enum RequestType {
     REMOTE_DISCONNECT = 4,
     REMOTE_FETCH = 5,
     SERVER_SIDE_EMIT = 6,
+    REMOTE_FETCH_ADAPTER = 7,
     BROADCAST,
     BROADCAST_CLIENT_COUNT,
     BROADCAST_ACK,
@@ -28,6 +29,7 @@ interface Request {
     timeout: NodeJS.Timeout;
     numSub?: number;
     msgCount?: number;
+    adapters?: any;
     [other: string]: any;
 }
 
@@ -53,6 +55,7 @@ export class KafkaAdapter extends Adapter {
     private consumer: Consumer;
     private producer: Producer;
     private admin: Admin;
+    private groupId: string;
     private adapterTopic: string;
     private requestTopic: string;
     private responseTopic: string;
@@ -64,6 +67,7 @@ export class KafkaAdapter extends Adapter {
     constructor(nsp: Namespace, kafka: Kafka, opts: KafkaAdapterOpts) {
         super(nsp)
         this.uid = uid2(6);
+        this.groupId = opts.groupId;
         this.adapterTopic = opts.topic || DEFAULT_KAFKA_ADAPTER_TOPIC;
         this.requestTopic = this.adapterTopic + '_request';
         this.responseTopic = this.adapterTopic + '_response';
@@ -301,6 +305,28 @@ export class KafkaAdapter extends Adapter {
                     this.publishResponse(response);
                     break; 
 
+                case RequestType.REMOTE_FETCH_ADAPTER:   
+                    debug('---------- RequestType: REMOTE_FETCH_ADAPTER ----------');
+                    debug('request.requestId:', request.requestId);
+                    // debug('this.requests:', this.requests);
+                    if (this.requests.has(request.requestId)) {
+                        debug('ignore self');
+                        return;
+                    }
+
+                    debug('this:', this);
+                    response = JSON.stringify({
+                        requestId: request.requestId,
+                        adapters: {
+                            uid: this.uid,
+                            groupId: this.groupId,
+                        }
+                    });
+                    debug('response:', response);
+
+                    this.publishResponse(response);
+                    break; 
+
                 case RequestType.SERVER_SIDE_EMIT:
                     debug('---------- RequestType: SERVER_SIDE_EMIT ----------');
                     if (request.uid === this.uid) {
@@ -435,7 +461,8 @@ export class KafkaAdapter extends Adapter {
         switch (request.type) {
             case RequestType.SOCKETS:
             case RequestType.REMOTE_FETCH:
-                debug('---------- RequestType: REMOTE_FETCH ----------');
+                debug('---------- ResponseType: SOCKETS, REMOTE_FETCH ----------');
+
                 request.msgCount++;
         
                 // ignore if response does not contain 'sockets' key
@@ -455,9 +482,17 @@ export class KafkaAdapter extends Adapter {
                     this.requests.delete(requestId);
                 }
                 break;
+
+            case RequestType.REMOTE_FETCH_ADAPTER:
+                debug('---------- ResponseType: REMOTE_FETCH_ADAPTER ----------');
+                debug('response.adapter:', response);
+                if (response.adapters) {
+                    request.adapters.push(response.adapters);
+                }
+                break;
         
             case RequestType.ALL_ROOMS:
-                debug('---------- RequestType: ALL_ROOMS ----------');
+                debug('---------- ResponseType: ALL_ROOMS ----------');
                 request.msgCount++;
         
                 // ignore if response does not contain 'rooms' key
@@ -477,7 +512,7 @@ export class KafkaAdapter extends Adapter {
             case RequestType.REMOTE_JOIN:
             case RequestType.REMOTE_LEAVE:
             case RequestType.REMOTE_DISCONNECT:
-                debug('---------- RequestType: REMOTE_DISCONNECT ----------');
+                debug('---------- ResponseType: REMOTE_JOIN, REMOTE_LEAVE, REMOTE_DISCONNECT ----------');
                 clearTimeout(request.timeout);
                 if (request.resolve) {
                     request.resolve();
@@ -486,7 +521,7 @@ export class KafkaAdapter extends Adapter {
                 break;
         
             case RequestType.SERVER_SIDE_EMIT:
-                debug('---------- RequestType: SERVER_SIDE_EMIT ----------');
+                debug('---------- ResponseType: SERVER_SIDE_EMIT ----------');
                 request.responses.push(response.data);
         
                 debug("serverSideEmit: got %d responses out of %d", request.responses.length, request.numSub);
@@ -711,7 +746,6 @@ export class KafkaAdapter extends Adapter {
     public async fetchSockets(opts: BroadcastOptions): Promise<any[]> {
         debug('---------- Func: fetchSockets ----------');
         const localSockets = await super.fetchSockets(opts);
-        debug('localSockets', localSockets);
         if (opts.flags?.local) {
             return localSockets;
         }
@@ -764,15 +798,59 @@ export class KafkaAdapter extends Adapter {
         });
     }
 
-    private async getNumSub(): Promise<number> {
-        debug('---------- Func: getNumSub ----------');
-        const describeCluster = await this.admin.describeCluster();
-        debug('describeCluster:', describeCluster);
-        return describeCluster.brokers.length;
+    private async fetchAdapter(): Promise<any[]> {
+        debug('---------- Func: fetchAdapter ----------');
+
+        const requestId = uid2(6);
+        const request = JSON.stringify({
+            uid: this.uid,
+            requestId,
+            type: RequestType.REMOTE_FETCH_ADAPTER
+        });
+
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                debug('ON timeout');
+                const request = this.requests.get(requestId);
+                if (request) {
+                    debug('request:', request);
+                    resolve(request.adapters);
+                    this.requests.delete(requestId);
+                } else {
+                    reject(new Error('Something wrong!!'))
+                }
+            }, 1000);
+
+            this.requests.set(requestId, {
+                type: RequestType.REMOTE_FETCH_ADAPTER,
+                resolve,
+                timeout,
+                // msgCount: 1,
+                adapters: [{
+                    uid: this.uid,
+                    groupId: this.groupId,
+                }]
+            });
+
+            debug('this.requests:', this.requests);
+
+            debug('REMOTE_FETCH_ADAPTER sockets request:', request);
+            const msg = msgpack.encode([this.uid, request]);
+            const pMessage = {
+                topic: this.requestTopic,
+                messages: [{
+                    key: this.uid,
+                    value: msg
+                }]
+            }
+            debug('producer send message:', pMessage);
+            this.producer.send(pMessage);
+        });
     }
 
-    serverCount(): Promise<number> {
-        return this.getNumSub();
+    private async getNumSub(): Promise<number> {
+        const adapters = await this.fetchAdapter();
+        return adapters.length;
     }
 
     async close() {
