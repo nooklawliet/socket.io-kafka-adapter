@@ -16,7 +16,6 @@ const socket_io_adapter_1 = require("socket.io-adapter");
 const msgpack = require("notepack.io");
 const uid2 = require("uid2");
 const Debug = require("debug");
-const kafkajs_1 = require("kafkajs");
 const debug = new Debug('socket.io-kafka-adapter');
 const DEFAULT_KAFKA_ADAPTER_TOPIC = 'kafka_adapter';
 const DEFAULT_REQUEST_TIMEOUT = 5000;
@@ -34,10 +33,10 @@ var RequestType;
     RequestType[RequestType["BROADCAST_CLIENT_COUNT"] = 9] = "BROADCAST_CLIENT_COUNT";
     RequestType[RequestType["BROADCAST_ACK"] = 10] = "BROADCAST_ACK";
 })(RequestType || (RequestType = {}));
-function createAdapter(kafka, opts) {
+function createAdapter(consumer, producer, opts) {
     debug('create kafka adapter');
     return function (nsp) {
-        return new KafkaAdapter(nsp, kafka, opts);
+        return new KafkaAdapter(nsp, consumer, producer, opts);
     };
 }
 exports.createAdapter = createAdapter;
@@ -52,52 +51,37 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
      *
      * @public
      */
-    constructor(nsp, kafka, opts) {
+    constructor(nsp, consumer, producer, opts) {
         super(nsp);
         this.requests = new Map();
         this.ackRequests = new Map();
         this.uid = uid2(6);
-        this.groupId = opts.groupId;
+        this.consumer = consumer;
+        this.producer = producer;
         this.adapterTopic = opts.topic || DEFAULT_KAFKA_ADAPTER_TOPIC;
         this.requestTopic = this.adapterTopic + '_request';
         this.responseTopic = this.adapterTopic + '_response';
         this.requestsTimeout = opts.requestsTimeout || DEFAULT_REQUEST_TIMEOUT;
-        this.initConsumer(kafka, opts);
-        this.initProducer(kafka);
-        // this.initAdmin(kafka);
-        process.on("SIGINT", this.close.bind(this));
-        process.on("SIGQUIT", this.close.bind(this));
-        process.on("SIGTERM", this.close.bind(this));
-    }
-    async initConsumer(kafka, opts) {
-        this.consumer = kafka.consumer({ groupId: opts.groupId });
-        await this.consumer.connect();
-        await this.consumer.subscribe({
+        this.consumer.subscribe({
             topics: [this.adapterTopic, this.requestTopic, this.responseTopic]
+        }).then(async () => {
+            const describeGroup = await this.consumer.describeGroup();
+            this.groupId = describeGroup.groupId;
+            await this.consumer.run({
+                eachMessage: async (payload) => {
+                    if (payload.topic === this.adapterTopic)
+                        this.onmessage(payload);
+                    else if (payload.topic === this.requestTopic)
+                        this.onrequest(payload);
+                    else if (payload.topic === this.responseTopic)
+                        this.onresponse(payload);
+                }
+            });
         });
-        await this.consumer.run({
-            eachMessage: async (payload) => {
-                // debug('consumer recieved message:', payload);
-                if (payload.topic === this.adapterTopic) {
-                    this.onmessage(payload);
-                }
-                else if (payload.topic === this.requestTopic) {
-                    this.onrequest(payload);
-                }
-                else if (payload.topic === this.responseTopic) {
-                    this.onresponse(payload);
-                }
-            }
-        });
+        process.on('SIGINT', this.close.bind(this));
+        process.on('SIGQUIT', this.close.bind(this));
+        process.on('SIGTERM', this.close.bind(this));
     }
-    async initProducer(kafka) {
-        this.producer = kafka.producer({ createPartitioner: kafkajs_1.Partitioners.LegacyPartitioner });
-        await this.producer.connect();
-    }
-    // private async initAdmin(kafka: Kafka) {
-    //     this.admin = kafka.admin();
-    //     await this.admin.connect();
-    // }
     /**
     * Called with a subscription message
     *
@@ -143,10 +127,9 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
     async onrequest({ message }) {
         try {
             debug('---------- ON Request ----------');
-            // debug('message:', message);
             let msg;
             try {
-                // if the buffer starts with a "{" character
+                // if the buffer starts with a '{' character
                 if (message.value[0] === 0x7b) {
                     msg = JSON.parse(message.value.toString());
                 }
@@ -155,7 +138,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 }
             }
             catch (err) {
-                debug("ignoring malformed request");
+                debug('ignoring malformed request');
                 return;
             }
             let [uid, request] = msg;
@@ -264,17 +247,16 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 case RequestType.REMOTE_FETCH:
                     debug('---------- RequestType: REMOTE_FETCH ----------');
                     debug('request.requestId:', request.requestId);
-                    // debug('this.requests:', this.requests);
                     if (this.requests.has(request.requestId)) {
                         debug('ignore self');
                         return;
                     }
-                    const opts1 = {
+                    const optsFS = {
                         rooms: new Set(request.opts.rooms),
                         except: new Set(request.opts.except),
                     };
-                    debug('opts1:', opts1);
-                    const localSockets = await super.fetchSockets(opts1);
+                    debug('optsFS:', optsFS);
+                    const localSockets = await super.fetchSockets(optsFS);
                     response = JSON.stringify({
                         requestId: request.requestId,
                         sockets: localSockets.map((socket) => {
@@ -399,11 +381,9 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
     onresponse({ message }) {
         try {
             debug('---------- ON Response ----------');
-            // debug('message:', message);
-            // let response = JSON.parse(message.value);
             let request, msg;
             try {
-                // if the buffer starts with a "{" character
+                // if the buffer starts with a '{' character
                 if (message.value[0] === 0x7b) {
                     msg = JSON.parse(message.value.toString());
                 }
@@ -412,7 +392,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 }
             }
             catch (err) {
-                debug("ignoring malformed response");
+                debug('ignoring malformed response');
                 return;
             }
             let [uid, response] = msg;
@@ -443,9 +423,9 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 return;
             }
             if (!requestId || !(this.requests.has(requestId) || this.ackRequests.has(requestId))) {
-                return debug("ignoring unknown request");
+                return debug('ignoring unknown request');
             }
-            debug("received response %j", response);
+            debug('received response %j', response);
             request = this.requests.get(requestId);
             debug('request:', request);
             debug('type:', request.type, RequestType[request.type]);
@@ -506,7 +486,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 case RequestType.SERVER_SIDE_EMIT:
                     debug('---------- ResponseType: SERVER_SIDE_EMIT ----------');
                     request.responses.push(response.data);
-                    debug("serverSideEmit: got %d responses out of %d", request.responses.length, request.numSub);
+                    debug('serverSideEmit: got %d responses out of %d', request.responses.length, request.numSub);
                     if (request.responses.length === request.numSub) {
                         clearTimeout(request.timeout);
                         if (request.resolve) {
@@ -516,7 +496,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                     }
                     break;
                 default:
-                    debug("ignoring unknown request type: %s", request.type);
+                    debug('ignoring unknown request type: %s', request.type);
             }
         }
         catch (error) {
@@ -734,7 +714,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
      */
     serverSideEmit(packet) {
         debug('---------- Func: serverSideEmit ----------');
-        const withAck = typeof packet[packet.length - 1] === "function";
+        const withAck = typeof packet[packet.length - 1] === 'function';
         if (withAck) {
             this.serverSideEmitWithAck(packet).catch(() => {
                 // ignore errors
@@ -825,7 +805,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 if (this.requests.has(requestId)) {
-                    reject(new Error("timeout reached while waiting for allRooms response"));
+                    reject(new Error('timeout reached while waiting for allRooms response'));
                     this.requests.delete(requestId);
                 }
             }, this.requestsTimeout);
@@ -881,7 +861,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 if (this.requests.has(requestId)) {
-                    reject(new Error("timeout reached while waiting for fetchSockets response"));
+                    reject(new Error('timeout reached while waiting for fetchSockets response'));
                     this.requests.delete(requestId);
                 }
             }, this.requestsTimeout);
@@ -935,7 +915,6 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 type: RequestType.REMOTE_FETCH_ADAPTER,
                 resolve,
                 timeout,
-                // msgCount: 1,
                 adapters: [{
                         uid: this.uid,
                         groupId: this.groupId,

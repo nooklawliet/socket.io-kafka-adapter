@@ -2,7 +2,7 @@ import { Adapter, BroadcastOptions, Room } from 'socket.io-adapter';
 import * as msgpack from 'notepack.io';
 import * as uid2 from 'uid2';
 import * as Debug from 'debug';
-import { Kafka, Consumer, Producer, Partitioners, Admin } from 'kafkajs';
+import { Consumer, Producer, Admin } from 'kafkajs';
 import { Namespace } from 'socket.io';
 
 const debug = new Debug('socket.io-kafka-adapter');
@@ -43,20 +43,16 @@ export interface KafkaAdapterOpts {
      */
     topic: string;
     /**
-     * groupId are a vital part of consumer configuration in Apache Kafka.
-     */
-    groupId: string;
-    /**
      * after this timeout the adapter will stop waiting from responses to request.
      * @default 5000
      */
     requestsTimeout: number;
 }
 
-export function createAdapter(kafka: Kafka, opts: KafkaAdapterOpts) {
+export function createAdapter(consumer: Consumer, producer: Producer, opts: KafkaAdapterOpts) {
     debug('create kafka adapter');
     return function(nsp: Namespace) {
-        return new KafkaAdapter(nsp, kafka, opts);
+        return new KafkaAdapter(nsp, consumer, producer, opts);
     }
 }
 
@@ -84,53 +80,32 @@ export class KafkaAdapter extends Adapter {
      *
      * @public
      */
-    constructor(nsp: Namespace, kafka: Kafka, opts: KafkaAdapterOpts) {
+    constructor(nsp: Namespace, consumer: Consumer, producer: Producer, opts: KafkaAdapterOpts) {
         super(nsp)
         this.uid = uid2(6);
-        this.groupId = opts.groupId;
+        this.consumer = consumer;
+        this.producer = producer;
         this.adapterTopic = opts.topic || DEFAULT_KAFKA_ADAPTER_TOPIC;
         this.requestTopic = this.adapterTopic + '_request';
         this.responseTopic = this.adapterTopic + '_response';
         this.requestsTimeout = opts.requestsTimeout || DEFAULT_REQUEST_TIMEOUT;
-        
-        this.initConsumer(kafka, opts);
-        this.initProducer(kafka);
-        // this.initAdmin(kafka);
-       
-        process.on("SIGINT", this.close.bind(this));
-        process.on("SIGQUIT", this.close.bind(this));
-        process.on("SIGTERM", this.close.bind(this));
-    }
-
-    private async initConsumer(kafka: Kafka, opts: KafkaAdapterOpts) {
-        this.consumer = kafka.consumer({ groupId: opts.groupId });
-        await this.consumer.connect();
-        await this.consumer.subscribe({
+        this.consumer.subscribe({
             topics: [this.adapterTopic, this.requestTopic, this.responseTopic]
-        });
-        await this.consumer.run({
-            eachMessage: async (payload) => {
-                // debug('consumer recieved message:', payload);
-                if (payload.topic === this.adapterTopic) {
-                    this.onmessage(payload);
-                } else if (payload.topic === this.requestTopic) {
-                    this.onrequest(payload);
-                } else if (payload.topic === this.responseTopic) {
-                    this.onresponse(payload);
+        }).then(async () => {
+            const describeGroup = await this.consumer.describeGroup();
+            this.groupId = describeGroup.groupId;
+            await this.consumer.run({
+                eachMessage: async (payload) => {
+                    if (payload.topic === this.adapterTopic)        this.onmessage(payload);
+                    else if (payload.topic === this.requestTopic)   this.onrequest(payload);
+                    else if (payload.topic === this.responseTopic)  this.onresponse(payload);
                 }
-            }
+            });
         });
+        process.on('SIGINT', this.close.bind(this));
+        process.on('SIGQUIT', this.close.bind(this));
+        process.on('SIGTERM', this.close.bind(this));
     }
-
-    private async initProducer(kafka: Kafka) {
-        this.producer = kafka.producer({ createPartitioner: Partitioners.LegacyPartitioner });
-        await this.producer.connect();
-    }
-
-    // private async initAdmin(kafka: Kafka) {
-    //     this.admin = kafka.admin();
-    //     await this.admin.connect();
-    // }
 
      /**
      * Called with a subscription message
@@ -176,18 +151,16 @@ export class KafkaAdapter extends Adapter {
     private async onrequest({ message }) {
         try {
             debug('---------- ON Request ----------');
-            // debug('message:', message);
-
             let msg;
             try {
-                // if the buffer starts with a "{" character
+                // if the buffer starts with a '{' character
                 if (message.value[0] === 0x7b) {
                     msg = JSON.parse(message.value.toString());
                 } else {
                     msg = msgpack.decode(message.value);
                 }
             } catch (err) {
-                debug("ignoring malformed request");
+                debug('ignoring malformed request');
                 return;
             }
 
@@ -205,7 +178,6 @@ export class KafkaAdapter extends Adapter {
                         return;
                     }
                     const sockets = await super.sockets(new Set(request.rooms));
-    
                     response = JSON.stringify({
                         requestId: request.requestId,
                         sockets: [...sockets],
@@ -252,7 +224,6 @@ export class KafkaAdapter extends Adapter {
                         requestId: request.requestId,
                     });
                     debug('response:', response);
-
                     this.publishResponse(response);
                     break;
 
@@ -305,19 +276,16 @@ export class KafkaAdapter extends Adapter {
                 case RequestType.REMOTE_FETCH:   
                     debug('---------- RequestType: REMOTE_FETCH ----------');
                     debug('request.requestId:', request.requestId);
-                    // debug('this.requests:', this.requests);
                     if (this.requests.has(request.requestId)) {
                         debug('ignore self');
                         return;
                     }
-
-                    const opts1 = {
+                    const optsFS = {
                         rooms: new Set<Room>(request.opts.rooms),
                         except: new Set<Room>(request.opts.except),
                     };
-                    debug('opts1:', opts1);
-                    const localSockets = await super.fetchSockets(opts1);
-
+                    debug('optsFS:', optsFS);
+                    const localSockets = await super.fetchSockets(optsFS);
                     response = JSON.stringify({
                         requestId: request.requestId,
                         sockets: localSockets.map((socket) => {
@@ -332,7 +300,6 @@ export class KafkaAdapter extends Adapter {
                         }),
                     });
                     debug('response:', response);
-
                     this.publishResponse(response);
                     break; 
 
@@ -344,7 +311,6 @@ export class KafkaAdapter extends Adapter {
                         debug('ignore self');
                         return;
                     }
-
                     response = JSON.stringify({
                         requestId: request.requestId,
                         adapters: {
@@ -353,7 +319,6 @@ export class KafkaAdapter extends Adapter {
                         }
                     });
                     debug('response:', response);
-
                     this.publishResponse(response);
                     break; 
 
@@ -378,7 +343,6 @@ export class KafkaAdapter extends Adapter {
                         }
                         called = true;
                         debug('calling acknowledgement with %j', arg);
-
                         const request = JSON.stringify({
                             type: RequestType.SERVER_SIDE_EMIT,
                             requestId: requestId,
@@ -407,12 +371,10 @@ export class KafkaAdapter extends Adapter {
                         debug('ignore self');
                         return;
                     }
-    
                     const opts = {
                         rooms: new Set<Room>(request.opts.rooms),
                         except: new Set<Room>(request.opts.except),
                     };
-    
                     debug('opts:', opts);
                     super.broadcastWithAck(request.packet, opts, (clientCount) => {
                             debug('waiting for %d client acknowledgements', clientCount);
@@ -454,18 +416,16 @@ export class KafkaAdapter extends Adapter {
     private onresponse({ message }) {
         try {
             debug('---------- ON Response ----------');
-            // debug('message:', message);
-            // let response = JSON.parse(message.value);
             let request, msg;
             try {
-                // if the buffer starts with a "{" character
+                // if the buffer starts with a '{' character
                 if (message.value[0] === 0x7b) {
                     msg = JSON.parse(message.value.toString());
                 } else {
                     msg = msgpack.decode(message.value);
                 }
             } catch (err) {
-                debug("ignoring malformed response");
+                debug('ignoring malformed response');
                 return;
             }
 
@@ -498,11 +458,10 @@ export class KafkaAdapter extends Adapter {
             }
         
             if (!requestId || !(this.requests.has(requestId) || this.ackRequests.has(requestId))) {
-                return debug("ignoring unknown request");
+                return debug('ignoring unknown request');
             }
         
-            debug("received response %j", response);
-        
+            debug('received response %j', response);
             request = this.requests.get(requestId);
             debug('request:', request);
             debug('type:', request.type, RequestType[request.type]);
@@ -510,18 +469,14 @@ export class KafkaAdapter extends Adapter {
                 case RequestType.SOCKETS:
                 case RequestType.REMOTE_FETCH:
                     debug('---------- ResponseType: SOCKETS, REMOTE_FETCH ----------');
-
                     request.msgCount++;
-            
                     // ignore if response does not contain 'sockets' key
                     if (!response.sockets || !Array.isArray(response.sockets)) return;
-            
                     if (request.type === RequestType.SOCKETS) {
                         response.sockets.forEach((s) => request.sockets.add(s));
                     } else {
                         response.sockets.forEach((s) => request.sockets.push(s));
                     }
-            
                     if (request.msgCount === request.numSub) {
                         clearTimeout(request.timeout);
                         if (request.resolve) {
@@ -542,12 +497,9 @@ export class KafkaAdapter extends Adapter {
                 case RequestType.ALL_ROOMS:
                     debug('---------- ResponseType: ALL_ROOMS ----------');
                     request.msgCount++;
-            
                     // ignore if response does not contain 'rooms' key
                     if (!response.rooms || !Array.isArray(response.rooms)) return;
-            
                     response.rooms.forEach((s) => request.rooms.add(s));
-            
                     if (request.msgCount === request.numSub) {
                         clearTimeout(request.timeout);
                         if (request.resolve) {
@@ -571,8 +523,7 @@ export class KafkaAdapter extends Adapter {
                 case RequestType.SERVER_SIDE_EMIT:
                     debug('---------- ResponseType: SERVER_SIDE_EMIT ----------');
                     request.responses.push(response.data);
-            
-                    debug("serverSideEmit: got %d responses out of %d", request.responses.length, request.numSub);
+                    debug('serverSideEmit: got %d responses out of %d', request.responses.length, request.numSub);
                     if (request.responses.length === request.numSub) {
                         clearTimeout(request.timeout);
                         if (request.resolve) {
@@ -583,7 +534,7 @@ export class KafkaAdapter extends Adapter {
                     break;
             
                 default:
-                    debug("ignoring unknown request type: %s", request.type);
+                    debug('ignoring unknown request type: %s', request.type);
             }
         } catch (error) {
             return debug('error:', error);
@@ -697,7 +648,6 @@ export class KafkaAdapter extends Adapter {
                 this.ackRequests.delete(requestId);
             }, opts.flags!.timeout);
         }
-
         super.broadcastWithAck(packet, opts, clientCountCallback, ack);
     }
 
@@ -805,7 +755,7 @@ export class KafkaAdapter extends Adapter {
      */
     public serverSideEmit(packet: any[]): void {
         debug('---------- Func: serverSideEmit ----------');
-        const withAck = typeof packet[packet.length - 1] === "function";
+        const withAck = typeof packet[packet.length - 1] === 'function';
         if (withAck) {
             this.serverSideEmitWithAck(packet).catch(() => {
                 // ignore errors
@@ -839,7 +789,6 @@ export class KafkaAdapter extends Adapter {
         const ack = packet.pop();
         const numSub = (await this.getNumSub()) - 1; // ignore self
         debug('waiting for %d responses to "serverSideEmit" request', numSub);
-
         if (numSub <= 0) {
             return ack(null, []);
         }
@@ -904,7 +853,7 @@ export class KafkaAdapter extends Adapter {
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 if (this.requests.has(requestId)) {
-                    reject(new Error("timeout reached while waiting for allRooms response"));
+                    reject(new Error('timeout reached while waiting for allRooms response'));
                     this.requests.delete(requestId);
                 }
             }, this.requestsTimeout);
@@ -917,7 +866,6 @@ export class KafkaAdapter extends Adapter {
                 msgCount: 1,
                 rooms: localRooms,
             });
-
             debug('this.requests:', this.requests);
 
             debug('REMOTE_FETCH sockets request:', request);
@@ -964,7 +912,7 @@ export class KafkaAdapter extends Adapter {
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
                 if (this.requests.has(requestId)) {
-                    reject(new Error("timeout reached while waiting for fetchSockets response"));
+                    reject(new Error('timeout reached while waiting for fetchSockets response'));
                     this.requests.delete(requestId);
                 }
             }, this.requestsTimeout);
@@ -977,7 +925,6 @@ export class KafkaAdapter extends Adapter {
                 msgCount: 1,
                 sockets: localSockets,
             });
-
             debug('this.requests:', this.requests);
 
             debug('REMOTE_FETCH sockets request:', request);
@@ -999,7 +946,6 @@ export class KafkaAdapter extends Adapter {
      */
     private async fetchAdapter(): Promise<any[]> {
         debug('---------- Func: fetchAdapter ----------');
-
         const requestId = uid2(6);
         const request = JSON.stringify({
             uid: this.uid,
@@ -1024,13 +970,11 @@ export class KafkaAdapter extends Adapter {
                 type: RequestType.REMOTE_FETCH_ADAPTER,
                 resolve,
                 timeout,
-                // msgCount: 1,
                 adapters: [{
                     uid: this.uid,
                     groupId: this.groupId,
                 }]
             });
-
             debug('this.requests:', this.requests);
 
             debug('REMOTE_FETCH_ADAPTER sockets request:', request);

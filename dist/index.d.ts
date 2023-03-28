@@ -1,5 +1,5 @@
 import { Adapter, BroadcastOptions, Room } from 'socket.io-adapter';
-import { Kafka } from 'kafkajs';
+import { Consumer, Producer } from 'kafkajs';
 import { Namespace } from 'socket.io';
 export interface KafkaAdapterOpts {
     /**
@@ -7,16 +7,12 @@ export interface KafkaAdapterOpts {
      */
     topic: string;
     /**
-     * groupId are a vital part of consumer configuration in Apache Kafka.
-     */
-    groupId: string;
-    /**
      * after this timeout the adapter will stop waiting from responses to request.
      * @default 5000
      */
     requestsTimeout: number;
 }
-export declare function createAdapter(kafka: Kafka, opts: KafkaAdapterOpts): (nsp: Namespace) => KafkaAdapter;
+export declare function createAdapter(consumer: Consumer, producer: Producer, opts: KafkaAdapterOpts): (nsp: Namespace) => KafkaAdapter;
 export declare class KafkaAdapter extends Adapter {
     private consumer;
     private producer;
@@ -39,9 +35,7 @@ export declare class KafkaAdapter extends Adapter {
      *
      * @public
      */
-    constructor(nsp: Namespace, kafka: Kafka, opts: KafkaAdapterOpts);
-    private initConsumer;
-    private initProducer;
+    constructor(nsp: Namespace, consumer: Consumer, producer: Producer, opts: KafkaAdapterOpts);
     /**
     * Called with a subscription message
     *
