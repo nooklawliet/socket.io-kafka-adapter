@@ -18,9 +18,9 @@ enum RequestType {
     REMOTE_FETCH = 5,
     SERVER_SIDE_EMIT = 6,
     REMOTE_FETCH_ADAPTER = 7,
-    BROADCAST,
-    BROADCAST_CLIENT_COUNT,
-    BROADCAST_ACK,
+    BROADCAST = 8,
+    BROADCAST_CLIENT_COUNT = 9,
+    BROADCAST_ACK = 10,
 }
 
 interface Request {
@@ -38,8 +38,18 @@ interface AckRequest {
     ack: (...args: any[]) => void;
 }
 export interface KafkaAdapterOpts {
+    /**
+     * topics are the categories used to organize messages.
+     */
     topic: string;
+    /**
+     * groupId are a vital part of consumer configuration in Apache Kafka.
+     */
     groupId: string;
+    /**
+     * after this timeout the adapter will stop waiting from responses to request.
+     * @default 5000
+     */
     requestsTimeout: number;
 }
 
@@ -64,6 +74,16 @@ export class KafkaAdapter extends Adapter {
     private requests: Map<string, Request> = new Map();
     private ackRequests: Map<string, AckRequest> = new Map();
 
+    /**
+     * Adapter constructor.
+     *
+     * @param nsp - the namespace
+     * @param consumer - a client that reads data from one or more Kafka topics
+     * @param producer - a client that writes data to one or more Kafka topics
+     * @param opts - additional options
+     *
+     * @public
+     */
     constructor(nsp: Namespace, kafka: Kafka, opts: KafkaAdapterOpts) {
         super(nsp)
         this.uid = uid2(6);
@@ -75,7 +95,7 @@ export class KafkaAdapter extends Adapter {
         
         this.initConsumer(kafka, opts);
         this.initProducer(kafka);
-        this.initAdmin(kafka);
+        // this.initAdmin(kafka);
        
         process.on("SIGINT", this.close.bind(this));
         process.on("SIGQUIT", this.close.bind(this));
@@ -107,11 +127,16 @@ export class KafkaAdapter extends Adapter {
         await this.producer.connect();
     }
 
-    private async initAdmin(kafka: Kafka) {
-        this.admin = kafka.admin();
-        await this.admin.connect();
-    }
+    // private async initAdmin(kafka: Kafka) {
+    //     this.admin = kafka.admin();
+    //     await this.admin.connect();
+    // }
 
+     /**
+     * Called with a subscription message
+     *
+     * @private
+     */
     private async onmessage({ message }) {
         try {
             debug('---------- ON Message ----------');
@@ -143,10 +168,15 @@ export class KafkaAdapter extends Adapter {
         }
     }
 
+    /**
+     * Called on request from another node
+     *
+     * @private
+     */
     private async onrequest({ message }) {
         try {
             debug('---------- ON Request ----------');
-            debug('message:', message);
+            // debug('message:', message);
 
             let msg;
             try {
@@ -187,6 +217,7 @@ export class KafkaAdapter extends Adapter {
                 case RequestType.ALL_ROOMS:
                     debug('---------- RequestType: ALL_ROOMS ----------');
                     if (this.requests.has(request.requestId)) {
+                        debug('ignore self');
                         return;
                     }
                     response = JSON.stringify({
@@ -314,7 +345,6 @@ export class KafkaAdapter extends Adapter {
                         return;
                     }
 
-                    debug('this:', this);
                     response = JSON.stringify({
                         requestId: request.requestId,
                         adapters: {
@@ -372,8 +402,9 @@ export class KafkaAdapter extends Adapter {
 
                 case RequestType.BROADCAST: 
                     debug('---------- RequestType: BROADCAST ----------');
+                    debug('this.ackRequests:', this.ackRequests);
                     if (this.ackRequests.has(request.requestId)) {
-                        // ignore self
+                        debug('ignore self');
                         return;
                     }
     
@@ -382,20 +413,25 @@ export class KafkaAdapter extends Adapter {
                         except: new Set<Room>(request.opts.except),
                     };
     
+                    debug('opts:', opts);
                     super.broadcastWithAck(request.packet, opts, (clientCount) => {
                             debug('waiting for %d client acknowledgements', clientCount);
-                            this.publishResponse(JSON.stringify({
+                            response = JSON.stringify({
                                 type: RequestType.BROADCAST_CLIENT_COUNT,
                                 requestId: request.requestId,
                                 clientCount,
-                            }));
+                            });
+                            debug('response:', response);
+                            this.publishResponse(response);
                         }, (arg) => {
                             debug('received acknowledgement with value %j', arg);
-                            this.publishResponse(msgpack.encode({
+                            response = JSON.stringify({
                                 type: RequestType.BROADCAST_ACK,
                                 requestId: request.requestId,
                                 packet: arg,
-                            }));
+                            });
+                            debug('response:', response);
+                            this.publishResponse(response);
                         }
                     );
                     break;
@@ -410,135 +446,156 @@ export class KafkaAdapter extends Adapter {
         }
     }
 
+    /**
+     * Called on response from another node
+     *
+     * @private
+     */
     private onresponse({ message }) {
-        debug('---------- ON Response ----------');
-        debug('message:', message);
-        // let response = JSON.parse(message.value);
-        let request, msg;
         try {
-            // if the buffer starts with a "{" character
-            if (message.value[0] === 0x7b) {
-                msg = JSON.parse(message.value.toString());
-            } else {
-                msg = msgpack.decode(message.value);
-            }
-        } catch (err) {
-            debug("ignoring malformed response");
-            return;
-        }
-
-        let [uid, response] = msg;
-        if (!(uid && response)) return debug('invalid params');
-        response = JSON.parse(response);
-        debug('JSON response:', response);
-    
-        const requestId = response.requestId;
-        debug('requestId:', requestId);
-        if (this.ackRequests.has(requestId)) {
-            const ackRequest = this.ackRequests.get(requestId);
-            switch (response.type) {
-                case RequestType.BROADCAST_CLIENT_COUNT: {
-                    ackRequest?.clientCountCallback(response.clientCount);
-                    break;
-                }
-                case RequestType.BROADCAST_ACK: {
-                    ackRequest?.ack(response.packet);
-                    break;
-                }
-            }
-            return;
-        }
-    
-        if (!requestId || !(this.requests.has(requestId) || this.ackRequests.has(requestId))) {
-            return debug("ignoring unknown request");
-        }
-    
-        debug("received response %j", response);
-    
-        request = this.requests.get(requestId);
-        debug('request:', request);
-    
-        switch (request.type) {
-            case RequestType.SOCKETS:
-            case RequestType.REMOTE_FETCH:
-                debug('---------- ResponseType: SOCKETS, REMOTE_FETCH ----------');
-
-                request.msgCount++;
-        
-                // ignore if response does not contain 'sockets' key
-                if (!response.sockets || !Array.isArray(response.sockets)) return;
-        
-                if (request.type === RequestType.SOCKETS) {
-                    response.sockets.forEach((s) => request.sockets.add(s));
+            debug('---------- ON Response ----------');
+            // debug('message:', message);
+            // let response = JSON.parse(message.value);
+            let request, msg;
+            try {
+                // if the buffer starts with a "{" character
+                if (message.value[0] === 0x7b) {
+                    msg = JSON.parse(message.value.toString());
                 } else {
-                    response.sockets.forEach((s) => request.sockets.push(s));
+                    msg = msgpack.decode(message.value);
                 }
-        
-                if (request.msgCount === request.numSub) {
-                    clearTimeout(request.timeout);
-                    if (request.resolve) {
-                        request.resolve(request.sockets);
-                    }
-                    this.requests.delete(requestId);
-                }
-                break;
+            } catch (err) {
+                debug("ignoring malformed response");
+                return;
+            }
 
-            case RequestType.REMOTE_FETCH_ADAPTER:
-                debug('---------- ResponseType: REMOTE_FETCH_ADAPTER ----------');
-                debug('response.adapter:', response);
-                if (response.adapters) {
-                    request.adapters.push(response.adapters);
+            let [uid, response] = msg;
+            debug('response:', response);
+            if (!(uid && response)) return debug('invalid params');
+            response = JSON.parse(response);
+            debug('JSON response:', response);
+        
+            const requestId = response.requestId;
+            debug('has ackRequests:', this.ackRequests.has(requestId), 'requestId:', requestId);
+            debug('this.ackRequests:', this.ackRequests);
+            if (this.ackRequests.has(requestId)) {
+                const ackRequest = this.ackRequests.get(requestId);
+                debug('type:', response.type, RequestType[response.type]);
+                debug('ackRequest:', ackRequest);
+                switch (response.type) {
+                    case RequestType.BROADCAST_CLIENT_COUNT: {
+                        debug('response.clientCount:', response.clientCount);
+                        ackRequest?.clientCountCallback(response.clientCount);
+                        break;
+                    }
+                    case RequestType.BROADCAST_ACK: {
+                        debug('response.packet:', response.packet);
+                        ackRequest?.ack(response.packet);
+                        break;
+                    }
                 }
-                break;
+                return;
+            }
         
-            case RequestType.ALL_ROOMS:
-                debug('---------- ResponseType: ALL_ROOMS ----------');
-                request.msgCount++;
+            if (!requestId || !(this.requests.has(requestId) || this.ackRequests.has(requestId))) {
+                return debug("ignoring unknown request");
+            }
         
-                // ignore if response does not contain 'rooms' key
-                if (!response.rooms || !Array.isArray(response.rooms)) return;
+            debug("received response %j", response);
         
-                response.rooms.forEach((s) => request.rooms.add(s));
-        
-                if (request.msgCount === request.numSub) {
+            request = this.requests.get(requestId);
+            debug('request:', request);
+            debug('type:', request.type, RequestType[request.type]);
+            switch (request.type) {
+                case RequestType.SOCKETS:
+                case RequestType.REMOTE_FETCH:
+                    debug('---------- ResponseType: SOCKETS, REMOTE_FETCH ----------');
+
+                    request.msgCount++;
+            
+                    // ignore if response does not contain 'sockets' key
+                    if (!response.sockets || !Array.isArray(response.sockets)) return;
+            
+                    if (request.type === RequestType.SOCKETS) {
+                        response.sockets.forEach((s) => request.sockets.add(s));
+                    } else {
+                        response.sockets.forEach((s) => request.sockets.push(s));
+                    }
+            
+                    if (request.msgCount === request.numSub) {
+                        clearTimeout(request.timeout);
+                        if (request.resolve) {
+                            request.resolve(request.sockets);
+                        }
+                        this.requests.delete(requestId);
+                    }
+                    break;
+
+                case RequestType.REMOTE_FETCH_ADAPTER:
+                    debug('---------- ResponseType: REMOTE_FETCH_ADAPTER ----------');
+                    debug('response.adapter:', response);
+                    if (response.adapters) {
+                        request.adapters.push(response.adapters);
+                    }
+                    break;
+            
+                case RequestType.ALL_ROOMS:
+                    debug('---------- ResponseType: ALL_ROOMS ----------');
+                    request.msgCount++;
+            
+                    // ignore if response does not contain 'rooms' key
+                    if (!response.rooms || !Array.isArray(response.rooms)) return;
+            
+                    response.rooms.forEach((s) => request.rooms.add(s));
+            
+                    if (request.msgCount === request.numSub) {
+                        clearTimeout(request.timeout);
+                        if (request.resolve) {
+                            request.resolve(request.rooms);
+                        }
+                        this.requests.delete(requestId);
+                    }
+                    break;
+            
+                case RequestType.REMOTE_JOIN:
+                case RequestType.REMOTE_LEAVE:
+                case RequestType.REMOTE_DISCONNECT:
+                    debug('---------- ResponseType: REMOTE_JOIN, REMOTE_LEAVE, REMOTE_DISCONNECT ----------');
                     clearTimeout(request.timeout);
                     if (request.resolve) {
-                        request.resolve(request.rooms);
+                        request.resolve();
                     }
                     this.requests.delete(requestId);
-                }
-                break;
-        
-            case RequestType.REMOTE_JOIN:
-            case RequestType.REMOTE_LEAVE:
-            case RequestType.REMOTE_DISCONNECT:
-                debug('---------- ResponseType: REMOTE_JOIN, REMOTE_LEAVE, REMOTE_DISCONNECT ----------');
-                clearTimeout(request.timeout);
-                if (request.resolve) {
-                    request.resolve();
-                }
-                this.requests.delete(requestId);
-                break;
-        
-            case RequestType.SERVER_SIDE_EMIT:
-                debug('---------- ResponseType: SERVER_SIDE_EMIT ----------');
-                request.responses.push(response.data);
-        
-                debug("serverSideEmit: got %d responses out of %d", request.responses.length, request.numSub);
-                if (request.responses.length === request.numSub) {
-                    clearTimeout(request.timeout);
-                    if (request.resolve) {
-                        request.resolve(null, request.responses);
+                    break;
+            
+                case RequestType.SERVER_SIDE_EMIT:
+                    debug('---------- ResponseType: SERVER_SIDE_EMIT ----------');
+                    request.responses.push(response.data);
+            
+                    debug("serverSideEmit: got %d responses out of %d", request.responses.length, request.numSub);
+                    if (request.responses.length === request.numSub) {
+                        clearTimeout(request.timeout);
+                        if (request.resolve) {
+                            request.resolve(null, request.responses);
+                        }
+                        this.requests.delete(requestId);
                     }
-                    this.requests.delete(requestId);
-                }
-                break;
-        
-            default:
-                debug("ignoring unknown request type: %s", request.type);
+                    break;
+            
+                default:
+                    debug("ignoring unknown request type: %s", request.type);
+            }
+        } catch (error) {
+            return debug('error:', error);
         }
     }
 
+    /**
+     * Send the response to the requesting node
+     * @param response
+     * 
+     * @private
+     */
     private publishResponse(response) {
         debug('publishing response:', response);
         const msg = msgpack.encode([this.uid, response]);
@@ -553,11 +610,19 @@ export class KafkaAdapter extends Adapter {
         this.producer.send(pMessage);
     }
 
-    broadcast(packet: any, opts: BroadcastOptions) {
+    /**
+     * Broadcasts a packet.
+     *
+     * @param {Object} packet - packet to emit
+     * @param {Object} opts - options
+     *
+     * @public
+     */
+    public broadcast(packet: any, opts: BroadcastOptions) {
         try {
             debug('---------- Func: broadcast ----------');
             packet.nsp = this.nsp.name;
-            let local = opts && opts.flags && opts.flags.local;
+            const local = opts?.flags?.local;
             debug('local:', local);
             if (!local && this.producer) {
                 const rawOpts = {
@@ -589,6 +654,59 @@ export class KafkaAdapter extends Adapter {
         }
     }
 
+    public broadcastWithAck(packet: any, opts: BroadcastOptions, clientCountCallback: (clientCount: number) => void, ack: (...args: any[]) => void) {
+        debug('---------- Func: broadcastWithAck ----------');
+        packet.nsp = this.nsp.name;
+        const local = opts?.flags?.local;
+        if (!local && this.producer) {
+            const requestId = uid2(6);
+            const rawOpts = {
+                rooms: [...opts.rooms],
+                except: [...new Set(opts.except)],
+                flags: opts.flags,
+            };
+            const request = JSON.stringify({
+                uid: this.uid,
+                requestId,
+                type: RequestType.BROADCAST,
+                packet,
+                opts: rawOpts,
+            });
+
+            debug('broadcast with ack request:', request);
+            const msg = msgpack.encode([this.uid, request]);
+            const pMessage = {
+                topic: this.requestTopic,
+                messages: [{
+                    key: this.uid,
+                    value: msg
+                }]
+            }
+            debug('producer send message:', pMessage);
+            this.producer.send(pMessage);
+
+            this.ackRequests.set(requestId, {
+                clientCountCallback,
+                ack,
+            });
+
+            debug('timeout:', opts.flags!.timeout);
+            // we have no way to know at this level whether the server has received an acknowledgement from each client, so we
+            // will simply clean up the ackRequests map after the given delay
+            setTimeout(() => {
+                this.ackRequests.delete(requestId);
+            }, opts.flags!.timeout);
+        }
+
+        super.broadcastWithAck(packet, opts, clientCountCallback, ack);
+    }
+
+    /**
+     * Makes the matching socket instances join the specified rooms
+     *
+     * @param opts - the filters to apply
+     * @param rooms - the rooms to join
+     */
     public addSockets(opts: BroadcastOptions, rooms: Room[]) {
         debug('---------- Func: addSockets ----------');
         if (opts.flags?.local) {
@@ -615,6 +733,12 @@ export class KafkaAdapter extends Adapter {
         this.producer.send(pMessage);
     }
 
+    /**
+     * Makes the matching socket instances leave the specified rooms
+     *
+     * @param opts - the filters to apply
+     * @param rooms - the rooms to leave
+     */
     public delSockets(opts: BroadcastOptions, rooms: Room[]) {
         debug('---------- Func: delSockets ----------');
         if (opts.flags?.local) {
@@ -642,6 +766,12 @@ export class KafkaAdapter extends Adapter {
         this.producer.send(pMessage);
     }
     
+    /**
+     * Makes the matching socket instances disconnect
+     *
+     * @param opts - the filters to apply
+     * @param close - whether to close the underlying connection
+     */
     public disconnectSockets(opts: BroadcastOptions, close: boolean) {
         debug('---------- Func: disconnectSockets ----------');
         if (opts.flags?.local) {
@@ -669,6 +799,10 @@ export class KafkaAdapter extends Adapter {
         this.producer.send(pMessage);
     }
 
+    /**
+     * Send a packet to the other Socket.IO servers in the cluster
+     * @param packet - an array of arguments
+     */
     public serverSideEmit(packet: any[]): void {
         debug('---------- Func: serverSideEmit ----------');
         const withAck = typeof packet[packet.length - 1] === "function";
@@ -696,6 +830,10 @@ export class KafkaAdapter extends Adapter {
         this.producer.send(pMessage);
     }
 
+     /**
+     * Send a packet to the other Socket.IO servers in the cluster
+     * @param packet - an array of arguments, which may include an acknowledgement callback at the end
+     */
     private async serverSideEmitWithAck(packet: any[]) {
         debug('---------- Func: serverSideEmitWithAck ----------');
         const ack = packet.pop();
@@ -743,6 +881,64 @@ export class KafkaAdapter extends Adapter {
         this.producer.send(pMessage);
     }
 
+    /**
+     * Gets the list of all rooms (across every node)
+     *
+     * @public
+     */
+    public async allRooms(): Promise<Set<Room>> {
+        debug('---------- Func: allRooms ----------');
+        const localRooms = new Set(this.rooms.keys());
+        const numSub = await this.getNumSub();
+        debug('waiting for %d responses to "allRooms" request', numSub);
+        if (numSub <= 1) {
+            return localRooms;
+        }
+        const requestId = uid2(6);
+        const request = JSON.stringify({
+            uid: this.uid,
+            requestId,
+            type: RequestType.ALL_ROOMS,
+        });
+
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                if (this.requests.has(requestId)) {
+                    reject(new Error("timeout reached while waiting for allRooms response"));
+                    this.requests.delete(requestId);
+                }
+            }, this.requestsTimeout);
+
+            this.requests.set(requestId, {
+                type: RequestType.ALL_ROOMS,
+                numSub,
+                resolve,
+                timeout,
+                msgCount: 1,
+                rooms: localRooms,
+            });
+
+            debug('this.requests:', this.requests);
+
+            debug('REMOTE_FETCH sockets request:', request);
+            const msg = msgpack.encode([this.uid, request]);
+            const pMessage = {
+                topic: this.requestTopic,
+                messages: [{
+                    key: this.uid,
+                    value: msg
+                }]
+            }
+            debug('producer send message:', pMessage);
+            this.producer.send(pMessage);
+        });
+    }
+
+    /**
+     * Returns the matching socket instances
+     *
+     * @param opts - the filters to apply
+     */
     public async fetchSockets(opts: BroadcastOptions): Promise<any[]> {
         debug('---------- Func: fetchSockets ----------');
         const localSockets = await super.fetchSockets(opts);
@@ -798,6 +994,9 @@ export class KafkaAdapter extends Adapter {
         });
     }
 
+    /**
+     * Returns lists of Socket.IO servers with kafka adapter
+     */
     private async fetchAdapter(): Promise<any[]> {
         debug('---------- Func: fetchAdapter ----------');
 
@@ -848,12 +1047,19 @@ export class KafkaAdapter extends Adapter {
         });
     }
 
+    /**
+     * Returns number of Socket.IO servers with kafka adapter
+     */
     private async getNumSub(): Promise<number> {
         const adapters = await this.fetchAdapter();
         return adapters.length;
     }
 
-    async close() {
+    public async serverCount(): Promise<number> {
+        return await this.getNumSub();
+    }
+
+    public async close() {
         debug('---------- Func: close ----------');
         if (this.consumer) {
             await this.consumer.stop();
