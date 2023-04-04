@@ -16,7 +16,6 @@ export declare function createAdapter(consumer: Consumer, producer: Producer, op
 export declare class KafkaAdapter extends Adapter {
     private consumer;
     private producer;
-    private admin;
     private groupId;
     private adapterTopic;
     private requestTopic;
@@ -27,67 +26,60 @@ export declare class KafkaAdapter extends Adapter {
     private ackRequests;
     /**
      * Adapter constructor.
-     *
      * @param nsp - the namespace
      * @param consumer - a client that reads data from one or more Kafka topics
      * @param producer - a client that writes data to one or more Kafka topics
      * @param opts - additional options
-     *
-     * @public
      */
     constructor(nsp: Namespace, consumer: Consumer, producer: Producer, opts: KafkaAdapterOpts);
     /**
     * Called with a subscription message
-    *
-    * @private
     */
     private onmessage;
     /**
      * Called on request from another node
-     *
-     * @private
      */
     private onrequest;
     /**
      * Called on response from another node
-     *
-     * @private
      */
     private onresponse;
     /**
      * Send the response to the requesting node
-     * @param response
-     *
-     * @private
+     * @param response - response message to publishing
      */
     private publishResponse;
     /**
+     * Send the request command
+     * @param request - request message to publishing
+     */
+    private publishRequest;
+    /**
      * Broadcasts a packet.
-     *
-     * @param {Object} packet - packet to emit
-     * @param {Object} opts - options
-     *
-     * @public
+     * @param packet - packet to emit
+     * @param opts - options
      */
     broadcast(packet: any, opts: BroadcastOptions): any;
+    /**
+     * Broadcasts a packet with acknowledges.
+     * @param packet - packet to emit
+     * @param opts - options
+     */
     broadcastWithAck(packet: any, opts: BroadcastOptions, clientCountCallback: (clientCount: number) => void, ack: (...args: any[]) => void): void;
     /**
      * Makes the matching socket instances join the specified rooms
-     *
      * @param opts - the filters to apply
      * @param rooms - the rooms to join
      */
     addSockets(opts: BroadcastOptions, rooms: Room[]): void;
     /**
      * Makes the matching socket instances leave the specified rooms
-     *
      * @param opts - the filters to apply
      * @param rooms - the rooms to leave
      */
     delSockets(opts: BroadcastOptions, rooms: Room[]): void;
     /**
      * Makes the matching socket instances disconnect
-     *
      * @param opts - the filters to apply
      * @param close - whether to close the underlying connection
      */
@@ -104,13 +96,10 @@ export declare class KafkaAdapter extends Adapter {
     private serverSideEmitWithAck;
     /**
      * Gets the list of all rooms (across every node)
-     *
-     * @public
      */
     allRooms(): Promise<Set<Room>>;
     /**
      * Returns the matching socket instances
-     *
      * @param opts - the filters to apply
      */
     fetchSockets(opts: BroadcastOptions): Promise<any[]>;

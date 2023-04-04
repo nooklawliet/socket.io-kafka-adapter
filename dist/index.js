@@ -43,13 +43,10 @@ exports.createAdapter = createAdapter;
 class KafkaAdapter extends socket_io_adapter_1.Adapter {
     /**
      * Adapter constructor.
-     *
      * @param nsp - the namespace
      * @param consumer - a client that reads data from one or more Kafka topics
      * @param producer - a client that writes data to one or more Kafka topics
      * @param opts - additional options
-     *
-     * @public
      */
     constructor(nsp, consumer, producer, opts) {
         super(nsp);
@@ -84,8 +81,6 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
     }
     /**
     * Called with a subscription message
-    *
-    * @private
     */
     async onmessage({ message }) {
         try {
@@ -93,8 +88,9 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             const args = msgpack.decode(message.value);
             debug('args:', args);
             const [uid, packet, opts] = args;
-            if (!(uid && packet && opts))
-                return debug('invalid params');
+            if (!(uid && packet && opts)) {
+                throw new Error('invalid params');
+            }
             if (this.uid === uid)
                 return debug('ignore same uid');
             if (packet.nsp === undefined)
@@ -116,36 +112,22 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             super.broadcast(packet, opts);
         }
         catch (error) {
-            return debug('error:', error);
+            return debug('on message error:', error);
         }
     }
     /**
      * Called on request from another node
-     *
-     * @private
      */
     async onrequest({ message }) {
         try {
             debug('---------- ON Request ----------');
-            let msg;
-            try {
-                // if the buffer starts with a '{' character
-                if (message.value[0] === 0x7b) {
-                    msg = JSON.parse(message.value.toString());
-                }
-                else {
-                    msg = msgpack.decode(message.value);
-                }
-            }
-            catch (err) {
-                debug('ignoring malformed request');
-                return;
-            }
+            let msg = msgpack.decode(message.value);
             let [uid, request] = msg;
-            if (!(uid && request))
-                return debug('invalid params');
+            if (!(uid && request)) {
+                throw new Error('invalid params');
+            }
             request = JSON.parse(request);
-            debug('JSON request:', request);
+            debug(`uid: ${uid}, request:`, request);
             let socket, response;
             switch (request.type) {
                 case RequestType.SOCKETS:
@@ -158,20 +140,17 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                         requestId: request.requestId,
                         sockets: [...sockets],
                     });
-                    debug('response:', response);
                     this.publishResponse(response);
                     break;
                 case RequestType.ALL_ROOMS:
                     debug('---------- RequestType: ALL_ROOMS ----------');
                     if (this.requests.has(request.requestId)) {
-                        debug('ignore self');
-                        return;
+                        return debug('ignore self');
                     }
                     response = JSON.stringify({
                         requestId: request.requestId,
                         rooms: [...this.rooms.keys()],
                     });
-                    debug('response:', response);
                     this.publishResponse(response);
                     break;
                 case RequestType.REMOTE_JOIN:
@@ -197,7 +176,6 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                     response = JSON.stringify({
                         requestId: request.requestId,
                     });
-                    debug('response:', response);
                     this.publishResponse(response);
                     break;
                 case RequestType.REMOTE_LEAVE:
@@ -248,8 +226,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                     debug('---------- RequestType: REMOTE_FETCH ----------');
                     debug('request.requestId:', request.requestId);
                     if (this.requests.has(request.requestId)) {
-                        debug('ignore self');
-                        return;
+                        return debug('ignore self');
                     }
                     const optsFS = {
                         rooms: new Set(request.opts.rooms),
@@ -270,16 +247,13 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                             };
                         }),
                     });
-                    debug('response:', response);
                     this.publishResponse(response);
                     break;
                 case RequestType.REMOTE_FETCH_ADAPTER:
                     debug('---------- RequestType: REMOTE_FETCH_ADAPTER ----------');
                     debug('request.requestId:', request.requestId);
-                    // debug('this.requests:', this.requests);
                     if (this.requests.has(request.requestId)) {
-                        debug('ignore self');
-                        return;
+                        return debug('ignore self');
                     }
                     response = JSON.stringify({
                         requestId: request.requestId,
@@ -288,14 +262,12 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                             groupId: this.groupId,
                         }
                     });
-                    debug('response:', response);
                     this.publishResponse(response);
                     break;
                 case RequestType.SERVER_SIDE_EMIT:
                     debug('---------- RequestType: SERVER_SIDE_EMIT ----------');
                     if (request.uid === this.uid) {
-                        debug('ignore same uid');
-                        return;
+                        return debug('ignore self');
                     }
                     const requestId = request.requestId;
                     const withAck = requestId !== undefined;
@@ -336,8 +308,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                     debug('---------- RequestType: BROADCAST ----------');
                     debug('this.ackRequests:', this.ackRequests);
                     if (this.ackRequests.has(request.requestId)) {
-                        debug('ignore self');
-                        return;
+                        return debug('ignore self');
                     }
                     const opts = {
                         rooms: new Set(request.opts.rooms),
@@ -351,7 +322,6 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                             requestId: request.requestId,
                             clientCount,
                         });
-                        debug('response:', response);
                         this.publishResponse(response);
                     }, (arg) => {
                         debug('received acknowledgement with value %j', arg);
@@ -360,7 +330,6 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                             requestId: request.requestId,
                             packet: arg,
                         });
-                        debug('response:', response);
                         this.publishResponse(response);
                     });
                     break;
@@ -370,44 +339,29 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             }
         }
         catch (error) {
-            return debug('error:', error);
+            return debug('on request error:', error);
         }
     }
     /**
      * Called on response from another node
-     *
-     * @private
      */
     onresponse({ message }) {
         try {
             debug('---------- ON Response ----------');
-            let request, msg;
-            try {
-                // if the buffer starts with a '{' character
-                if (message.value[0] === 0x7b) {
-                    msg = JSON.parse(message.value.toString());
-                }
-                else {
-                    msg = msgpack.decode(message.value);
-                }
-            }
-            catch (err) {
-                debug('ignoring malformed response');
-                return;
-            }
+            let msg = msgpack.decode(message.value);
             let [uid, response] = msg;
-            debug('response:', response);
-            if (!(uid && response))
-                return debug('invalid params');
+            if (!(uid && response)) {
+                throw new Error('invalid params');
+            }
             response = JSON.parse(response);
-            debug('JSON response:', response);
+            debug(`uid: ${uid}, response:`, response);
+            let request;
             const requestId = response.requestId;
-            debug('has ackRequests:', this.ackRequests.has(requestId), 'requestId:', requestId);
-            debug('this.ackRequests:', this.ackRequests);
+            debug(`requestId: ${requestId} exists in ackRequests: ${this.ackRequests.has(requestId)}`);
             if (this.ackRequests.has(requestId)) {
                 const ackRequest = this.ackRequests.get(requestId);
-                debug('type:', response.type, RequestType[response.type]);
                 debug('ackRequest:', ackRequest);
+                debug('type:', response.type, RequestType[response.type]);
                 switch (response.type) {
                     case RequestType.BROADCAST_CLIENT_COUNT: {
                         debug('response.clientCount:', response.clientCount);
@@ -425,7 +379,6 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             if (!requestId || !(this.requests.has(requestId) || this.ackRequests.has(requestId))) {
                 return debug('ignoring unknown request');
             }
-            debug('received response %j', response);
             request = this.requests.get(requestId);
             debug('request:', request);
             debug('type:', request.type, RequestType[request.type]);
@@ -500,14 +453,12 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             }
         }
         catch (error) {
-            return debug('error:', error);
+            return debug('on response error:', error);
         }
     }
     /**
      * Send the response to the requesting node
-     * @param response
-     *
-     * @private
+     * @param response - response message to publishing
      */
     publishResponse(response) {
         debug('publishing response:', response);
@@ -519,16 +470,30 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                     value: msg
                 }]
         };
-        debug('producer send message:', pMessage);
+        debug('producer send response message:', pMessage);
+        this.producer.send(pMessage);
+    }
+    /**
+     * Send the request command
+     * @param request - request message to publishing
+     */
+    publishRequest(request) {
+        debug('publishing request:', request);
+        const msg = msgpack.encode([this.uid, request]);
+        const pMessage = {
+            topic: this.requestTopic,
+            messages: [{
+                    key: this.uid,
+                    value: msg
+                }]
+        };
+        debug('producer send request message:', pMessage);
         this.producer.send(pMessage);
     }
     /**
      * Broadcasts a packet.
-     *
-     * @param {Object} packet - packet to emit
-     * @param {Object} opts - options
-     *
-     * @public
+     * @param packet - packet to emit
+     * @param opts - options
      */
     broadcast(packet, opts) {
         var _a;
@@ -567,6 +532,11 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             return debug('error:', error);
         }
     }
+    /**
+     * Broadcasts a packet with acknowledges.
+     * @param packet - packet to emit
+     * @param opts - options
+     */
     broadcastWithAck(packet, opts, clientCountCallback, ack) {
         var _a;
         debug('---------- Func: broadcastWithAck ----------');
@@ -586,17 +556,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 packet,
                 opts: rawOpts,
             });
-            debug('broadcast with ack request:', request);
-            const msg = msgpack.encode([this.uid, request]);
-            const pMessage = {
-                topic: this.requestTopic,
-                messages: [{
-                        key: this.uid,
-                        value: msg
-                    }]
-            };
-            debug('producer send message:', pMessage);
-            this.producer.send(pMessage);
+            this.publishRequest(request);
             this.ackRequests.set(requestId, {
                 clientCountCallback,
                 ack,
@@ -612,7 +572,6 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
     }
     /**
      * Makes the matching socket instances join the specified rooms
-     *
      * @param opts - the filters to apply
      * @param rooms - the rooms to join
      */
@@ -630,21 +589,10 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             },
             rooms: [...rooms],
         });
-        debug('add sockets request:', request);
-        const msg = msgpack.encode([this.uid, request]);
-        const pMessage = {
-            topic: this.requestTopic,
-            messages: [{
-                    key: this.uid,
-                    value: msg
-                }]
-        };
-        debug('producer send message:', pMessage);
-        this.producer.send(pMessage);
+        this.publishRequest(request);
     }
     /**
      * Makes the matching socket instances leave the specified rooms
-     *
      * @param opts - the filters to apply
      * @param rooms - the rooms to leave
      */
@@ -663,21 +611,10 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             },
             rooms: [...rooms],
         });
-        debug('del sockets request:', request);
-        const msg = msgpack.encode([this.uid, request]);
-        const pMessage = {
-            topic: this.requestTopic,
-            messages: [{
-                    key: this.uid,
-                    value: msg
-                }]
-        };
-        debug('producer send message:', pMessage);
-        this.producer.send(pMessage);
+        this.publishRequest(request);
     }
     /**
      * Makes the matching socket instances disconnect
-     *
      * @param opts - the filters to apply
      * @param close - whether to close the underlying connection
      */
@@ -696,17 +633,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             },
             close,
         });
-        debug('dicconnect sockets request:', request);
-        const msg = msgpack.encode([this.uid, request]);
-        const pMessage = {
-            topic: this.requestTopic,
-            messages: [{
-                    key: this.uid,
-                    value: msg
-                }]
-        };
-        debug('producer send message:', pMessage);
-        this.producer.send(pMessage);
+        this.publishRequest(request);
     }
     /**
      * Send a packet to the other Socket.IO servers in the cluster
@@ -726,17 +653,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             type: RequestType.SERVER_SIDE_EMIT,
             data: packet,
         });
-        debug('server side emit request:', request);
-        const msg = msgpack.encode([this.uid, request]);
-        const pMessage = {
-            topic: this.requestTopic,
-            messages: [{
-                    key: this.uid,
-                    value: msg
-                }]
-        };
-        debug('producer send message:', pMessage);
-        this.producer.send(pMessage);
+        this.publishRequest(request);
     }
     /**
     * Send a packet to the other Socket.IO servers in the cluster
@@ -771,22 +688,10 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
             resolve: ack,
             responses: [],
         });
-        debug('request:', request);
-        const msg = msgpack.encode([this.uid, request]);
-        const pMessage = {
-            topic: this.requestTopic,
-            messages: [{
-                    key: this.uid,
-                    value: msg
-                }]
-        };
-        debug('producer send message:', pMessage);
-        this.producer.send(pMessage);
+        this.publishRequest(request);
     }
     /**
      * Gets the list of all rooms (across every node)
-     *
-     * @public
      */
     async allRooms() {
         debug('---------- Func: allRooms ----------');
@@ -818,22 +723,11 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 rooms: localRooms,
             });
             debug('this.requests:', this.requests);
-            debug('REMOTE_FETCH sockets request:', request);
-            const msg = msgpack.encode([this.uid, request]);
-            const pMessage = {
-                topic: this.requestTopic,
-                messages: [{
-                        key: this.uid,
-                        value: msg
-                    }]
-            };
-            debug('producer send message:', pMessage);
-            this.producer.send(pMessage);
+            this.publishRequest(request);
         });
     }
     /**
      * Returns the matching socket instances
-     *
      * @param opts - the filters to apply
      */
     async fetchSockets(opts) {
@@ -874,17 +768,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                 sockets: localSockets,
             });
             debug('this.requests:', this.requests);
-            debug('REMOTE_FETCH sockets request:', request);
-            const msg = msgpack.encode([this.uid, request]);
-            const pMessage = {
-                topic: this.requestTopic,
-                messages: [{
-                        key: this.uid,
-                        value: msg
-                    }]
-            };
-            debug('producer send message:', pMessage);
-            this.producer.send(pMessage);
+            this.publishRequest(request);
         });
     }
     /**
@@ -921,17 +805,7 @@ class KafkaAdapter extends socket_io_adapter_1.Adapter {
                     }]
             });
             debug('this.requests:', this.requests);
-            debug('REMOTE_FETCH_ADAPTER sockets request:', request);
-            const msg = msgpack.encode([this.uid, request]);
-            const pMessage = {
-                topic: this.requestTopic,
-                messages: [{
-                        key: this.uid,
-                        value: msg
-                    }]
-            };
-            debug('producer send message:', pMessage);
-            this.producer.send(pMessage);
+            this.publishRequest(request);
         });
     }
     /**
